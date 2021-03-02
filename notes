@@ -1,0 +1,3 @@
+Only getting half the output range I'd expect
+
+(0 - 2048): should be 0-4096 with 12bit 

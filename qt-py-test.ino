@@ -3,6 +3,7 @@
 
 #define VOLT_SENSE PORT_PA02
 #define CURRENT_SENSE PORT_PA03
+#define MULTISAMPLE false
 
 void clockInit(void) {
   SYSCTRL->OSC8M.bit.PRESC = 0;                      // no prescaler (is 8 on reset)
@@ -16,14 +17,15 @@ void clockInit(void) {
   GCLK->GENCTRL.reg |= GCLK_GENCTRL_SRC_OSC8M;       // OSC8M source
 
   GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID_SERCOM0_CORE | // SERCOM0 peripheral channel
-                      GCLK_CLKCTRL_GEN_GCLK1;        // select source GCLK_GEN[1]
-  GCLK->CLKCTRL.bit.CLKEN = 1;                       // enable generic clock
+                      GCLK_CLKCTRL_GEN_GCLK1 |       // select source GCLK_GEN[1]
+                      GCLK_CLKCTRL_CLKEN;
 
   PM->APBCSEL.bit.APBCDIV = 0;                       // no prescaler
   PM->APBCMASK.bit.ADC_ = 1;                         // Enable clocking for the ADC */
+  while(GCLK->STATUS.reg & GCLK_STATUS_SYNCBUSY);
 }
 
-uint32_t readADC() {
+uint32_t readAdc() {
   /* Start the ADC using a software trigger. */
   ADC->SWTRIG.bit.START = true;
 
@@ -37,34 +39,78 @@ uint32_t readADC() {
   return ADC->RESULT.reg;
 }
 
+void tc5Init() {
+  GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(GCM_TC4_TC5) |
+                      GCLK_CLKCTRL_GEN_GCLK0 |
+                      GCLK_CLKCTRL_CLKEN;
+  while (GCLK->STATUS.bit.SYNCBUSY);
+
+   // Configure synchronous bus clock
+  PM->APBCSEL.bit.APBCDIV = 0; // no prescaler
+  PM->APBCMASK.bit.TC5_ = 1; // enable TC5 interface
+
+  // Configure Count Mode (16-bit)
+  TC5->COUNT16.CTRLA.bit.MODE = 0x0;
+
+  // Configure Prescaler for divide by 2 (500kHz clock to COUNT)
+  TC5->COUNT16.CTRLA.bit.PRESCALER = 0x1;
+
+  // Configure TC5 Compare Mode for compare channel 0
+  TC5->COUNT16.CTRLA.bit.WAVEGEN = 0x1; // "Match Frequency" operation
+
+  // Initialize compare value for 100mS @ 500kHz
+  TC5->COUNT16.CC[0].reg = 50000;
+
+  // Enable TC5 compare mode interrupt generation
+  TC5->COUNT16.INTENSET.bit.MC0 = 0x1; // Enable match interrupts on compare channel 0 
+
+  // Enable TC5
+  TC5->COUNT16.CTRLA.bit.ENABLE = 1;
+
+  // Wait until TC5 is enabled
+  while(TC5->COUNT16.STATUS.bit.SYNCBUSY == 1);
+  NVIC_SetPriority(TC5_IRQn, 3);
+  NVIC_EnableIRQ(TC5_IRQn);
+}
+
 void adcInit() {
-  /* Use the internal VCC reference. This is 1/2 of what's on VCCA.
-   * since VCCA is typically 3.3v, this is 1.65v.
+  // PORT->Group[0] is "PORTA" if it was Group[1] it would be "PORTB"
 
-   * TODO - Consider switching to an external reference source
-   * ADC_REFCTRL_REFSEL_VREFA since this would expand the range to
-   * 0 - 3V from 0 - 1.65V
-   */
-  ADC->REFCTRL.reg = ADC_REFCTRL_REFSEL_INTVCC1;
+  /* Set PA02 as an input pin. */
+  PORT->Group[0].DIRCLR.reg = PORT_PA02;
 
-  // Configure multisampling and averaging.
-  // Note that ADJRES must be set according to table
-  // 33-3 in the datasheet.
-  ADC->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_256 |
-                     ADC_AVGCTRL_ADJRES(4);
+  /* Enable the peripheral multiplexer for PA02. */
+  PORT->Group[0].PINCFG[2].reg |= PORT_PINCFG_PMUXEN;
 
-  /* Set the clock prescaler to 512, which will run the ADC at
-   * 8 Mhz / 512 = 31.25 kHz.
+  /* PMUX is strange, the register only needs 4 bits
+   * so they split the registers into odd and even segements
+   * so a single PMUX register looks like
+   *                PMUXE           PMUXO
+   * PMUX[N / 2] [ 0, 0, 0, 0, ] [ 0, 0, 0, 0 ]
+   *
+   * such that for pin 3 we would have index 1 but reference PMUXO (for odd)
    * 
-   * Adjust the RESSEL register, when using averaging
-   * We need to use maximum accuracy
+   * Set PA02 to function B which is analog input.
    */
-  ADC->CTRLB.reg = ADC_CTRLB_PRESCALER_DIV4 |
-                   ADC_CTRLB_RESSEL_16BIT;
+  PORT->Group[0].PMUX[2 >> 1].bit.PMUXE = PORT_PMUX_PMUXO_B;
 
-  /* This is the default
-  */
-  ADC->CTRLB.bit.DIFFMODE = 0;
+  GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(GCM_ADC )| // Generic Clock ADC
+                      GCLK_CLKCTRL_GEN_GCLK0   | // Generic Clock Generator 0 is source
+                      GCLK_CLKCTRL_CLKEN;
+
+  while (GCLK->STATUS.bit.SYNCBUSY);
+  while (ADC->STATUS.bit.SYNCBUSY);
+
+  ADC->CTRLB.reg = ADC_CTRLB_PRESCALER_DIV512 |    // Divide Clock by 512.
+                   ADC_CTRLB_RESSEL_12BIT;         // 10 bits resolution as default
+
+  ADC->SAMPCTRL.reg = ADC_SAMPCTRL_SAMPLEN(10);
+
+  while(ADC->STATUS.bit.SYNCBUSY);
+
+  ADC->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_1 |    // 1 sample only (no oversampling nor averaging)
+                     ADC_AVGCTRL_ADJRES(0x0ul);   // Adjusting result by 0
+
 
   /* Configure the input parameters.
 
@@ -88,31 +134,28 @@ void adcInit() {
                        ADC_INPUTCTRL_MUXNEG_GND |
                        ADC_INPUTCTRL_MUXPOS_PIN0;
 
-  // PORT->Group[0] is "PORTA" if it was Group[1] it would be "PORTB"
 
-  /* Set PA02 as an input pin. */
-  PORT->Group[0].DIRCLR.reg = PORT_PA02;
+  /* Use the internal VCC reference. This is 1/2 of what's on VCCA.
+   * since VCCA is typically 3.3v, this is 1.65v.
 
-  /* Enable the peripheral multiplexer for PA02. */
-  PORT->Group[0].PINCFG[2].reg |= PORT_PINCFG_PMUXEN;
-
-  /* PMUX is strange, the register only needs 4 bits
-   * so they split the registers into odd and even segements
-   * so a single PMUX register looks like
-   *                PMUXE           PMUXO
-   * PMUX[N / 2] [ 0, 0, 0, 0, ] [ 0, 0, 0, 0 ]
-   *
-   * such that for pin 3 we would have index 1 but reference PMUXO (for odd)
-   * 
-   * Set PA02 to function B which is analog input.
+   * TODO - Consider switching to an external reference source
+   * ADC_REFCTRL_REFSEL_VREFA since this would expand the range to
+   * 0 - 3V from 0 - 1.65V
    */
-  PORT->Group[0].PMUX[2 >> 1].bit.PMUXE = PORT_PMUX_PMUXO_B;
+  ADC->REFCTRL.reg = ADC_REFCTRL_REFSEL_INTVCC1;
+
+  /* This is the default but sets the ADC into single ended mode
+  */
+  ADC->CTRLB.bit.DIFFMODE = 0;
 
   /* Wait for bus synchronization. */
-  while (ADC->STATUS.bit.SYNCBUSY) {};
+  while (ADC->STATUS.bit.SYNCBUSY);
 
   /* Enable the ADC. */
   ADC->CTRLA.bit.ENABLE = true;
+  /* The first result should be thrown away, so let's just do that */
+  readAdc();
+  NVIC_EnableIRQ(ADC_IRQn);
 }
 
 void setup() {
@@ -121,16 +164,22 @@ void setup() {
 
   clockInit();
   adcInit();
-  /* The first result should be thrown away, so let's just do that */
-  readADC();
+  tc5Init();
 
   while (!Serial);
   Serial.println("QT Py Sensor");
 }
 
 void loop() {
+  // Serial.print("V: ");
+  // Serial.print(readAdc());
+  // Serial.print("\n\r");
+  ADC->SWTRIG.bit.START = true;
+  delay(1000);
+}
+
+void ADC_Handler(void) {
   Serial.print("V: ");
-  Serial.print(readADC());
-  Serial.print("\n");
-  delay(3000);
+  Serial.print(ADC->RESULT.reg);
+  Serial.print("\n\r");
 }
