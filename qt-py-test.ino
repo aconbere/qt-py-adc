@@ -5,7 +5,7 @@
 #define CURRENT_SENSE PORT_PA03
 #define MULTISAMPLE false
 
-void clockInit(void) {
+void Clock_Init(void) {
   SYSCTRL->OSC8M.bit.PRESC = 0;                      // no prescaler (is 8 on reset)
   SYSCTRL->OSC8M.bit.ENABLE = 1;                     // enable source
 
@@ -16,16 +16,16 @@ void clockInit(void) {
   GCLK->GENCTRL.bit.GENEN = 1;                       // enable generator
   GCLK->GENCTRL.reg |= GCLK_GENCTRL_SRC_OSC8M;       // OSC8M source
 
-  GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID_SERCOM0_CORE | // SERCOM0 peripheral channel
-                      GCLK_CLKCTRL_GEN_GCLK1 |       // select source GCLK_GEN[1]
-                      GCLK_CLKCTRL_CLKEN;
+  // GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID_SERCOM0_CORE | // SERCOM0 peripheral channel
+  //                     GCLK_CLKCTRL_GEN_GCLK1 |       // select source GCLK_GEN[1]
+  //                     GCLK_CLKCTRL_CLKEN;
 
   PM->APBCSEL.bit.APBCDIV = 0;                       // no prescaler
   PM->APBCMASK.bit.ADC_ = 1;                         // Enable clocking for the ADC */
   while(GCLK->STATUS.reg & GCLK_STATUS_SYNCBUSY);
 }
 
-uint32_t readAdc() {
+uint32_t ADC_Read() {
   /* Start the ADC using a software trigger. */
   ADC->SWTRIG.bit.START = true;
 
@@ -39,10 +39,11 @@ uint32_t readAdc() {
   return ADC->RESULT.reg;
 }
 
-void tc5Init() {
+void TC5_Init() {
   GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(GCM_TC4_TC5) |
                       GCLK_CLKCTRL_GEN_GCLK0 |
                       GCLK_CLKCTRL_CLKEN;
+
   while (GCLK->STATUS.bit.SYNCBUSY);
 
    // Configure synchronous bus clock
@@ -50,7 +51,11 @@ void tc5Init() {
   PM->APBCMASK.bit.TC5_ = 1; // enable TC5 interface
 
   // Configure Count Mode (16-bit)
-  TC5->COUNT16.CTRLA.bit.MODE = 0x0;
+  TC5->COUNT16.CTRLA.reg |= TC_CTRLA_MODE_COUNT16 |
+                            TC_CTRLA_WAVEGEN_MFRQ |
+                            TC_CTRLA_PRESCALER_DIV1024 |
+                            TC_CTRLA_ENABLE;
+
 
   // Configure Prescaler for divide by 2 (500kHz clock to COUNT)
   TC5->COUNT16.CTRLA.bit.PRESCALER = 0x1;
@@ -59,7 +64,7 @@ void tc5Init() {
   TC5->COUNT16.CTRLA.bit.WAVEGEN = 0x1; // "Match Frequency" operation
 
   // Initialize compare value for 100mS @ 500kHz
-  TC5->COUNT16.CC[0].reg = 50000;
+  TC5->COUNT16.CC[0].reg = 500000;
 
   // Enable TC5 compare mode interrupt generation
   TC5->COUNT16.INTENSET.bit.MC0 = 0x1; // Enable match interrupts on compare channel 0 
@@ -73,7 +78,7 @@ void tc5Init() {
   NVIC_EnableIRQ(TC5_IRQn);
 }
 
-void adcInit() {
+void ADC_Init() {
   // PORT->Group[0] is "PORTA" if it was Group[1] it would be "PORTB"
 
   /* Set PA02 as an input pin. */
@@ -148,23 +153,33 @@ void adcInit() {
   */
   ADC->CTRLB.bit.DIFFMODE = 0;
 
+
+  /* Enable interrupts */
+  ADC->INTENSET.bit.RESRDY == 1;
+
   /* Wait for bus synchronization. */
   while (ADC->STATUS.bit.SYNCBUSY);
 
   /* Enable the ADC. */
   ADC->CTRLA.bit.ENABLE = true;
   /* The first result should be thrown away, so let's just do that */
-  readAdc();
+  // ADC_Read();
+  NVIC_SetPriority(ADC_IRQn, 2);
   NVIC_EnableIRQ(ADC_IRQn);
 }
 
 void setup() {
-  Wire.begin();
   Serial.begin(9600);
 
-  clockInit();
-  adcInit();
-  tc5Init();
+  Wire.begin(28);
+  Wire.onRequest(Request_Handler);
+  Wire.onReceive(Receive_Handler);
+
+  __disable_irq();
+  Clock_Init();
+  ADC_Init();
+  // TC5_Init();
+  __enable_irq();
 
   while (!Serial);
   Serial.println("QT Py Sensor");
@@ -178,8 +193,29 @@ void loop() {
   delay(1000);
 }
 
+void TC5_Handler(void) {
+  Serial.println("TC5_Handler");
+  // start an ADC read
+  ADC->SWTRIG.bit.START = true;
+  // reset the timer interrupt
+  // TC5->COUNT16.INTFLAG.reg |= 0b00010000;
+  TC5->COUNT16.INTFLAG.bit.MC0 = 0x01;
+}
+
 void ADC_Handler(void) {
   Serial.print("V: ");
   Serial.print(ADC->RESULT.reg);
   Serial.print("\n\r");
+  // reset the adc interrupt
+  ADC->INTFLAG.bit.RESRDY = 0x01;
+}
+
+void Request_Handler() {
+  Wire.write("hello");
+}
+
+void Receive_Handler(int numBytes) {
+  while (Wire.available()) {
+    Wire.read();
+  }
 }

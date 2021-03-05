@@ -1,6 +1,6 @@
 #FQBN := "attiny:avr:ATtinyX5:cpu=attiny85,clock=internal8"
 FQBN := "adafruit:samd:adafruit_qtpy_m0"
-PORT := "/dev/ttyACM1"
+PORT ?= "/dev/ttyACM0"
 
 .DEFAULT_GOAL := all
 
