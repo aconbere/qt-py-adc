@@ -1,9 +1,4 @@
 #include <sam.h>
-// #include <Wire.h>
-
-#define VOLT_SENSE PORT_PA02
-#define CURRENT_SENSE PORT_PA03
-#define MULTISAMPLE false
 
 void Clock_Init(void) {
   // no prescaler (is 8 on reset)
@@ -43,51 +38,10 @@ uint32_t ADC_Read() {
   while (ADC->INTFLAG.bit.RESRDY == 0);
 
   /* Clear the flag. */
-  ADC->INTFLAG.reg = ADC_INTFLAG_RESRDY;
+  ADC->INTFLAG.bit.RESRDY = 1;
 
   /* Read the value. */
   return ADC->RESULT.reg;
-}
-
-void TC5_Init() {
-  GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(GCM_TC4_TC5) |
-                      GCLK_CLKCTRL_GEN_GCLK0 |
-                      GCLK_CLKCTRL_CLKEN;
-
-  while (GCLK->STATUS.bit.SYNCBUSY);
-
-   // Configure synchronous bus clock
-  PM->APBCSEL.bit.APBCDIV = 0; // no prescaler
-  PM->APBCMASK.bit.TC5_ = 1; // enable TC5 interface
-
-  // Configure Count Mode (16-bit)
-  TC5->COUNT16.CTRLA.reg |= TC_CTRLA_MODE_COUNT16 |
-                            TC_CTRLA_WAVEGEN_MFRQ |
-                            TC_CTRLA_PRESCALER_DIV1024 |
-                            TC_CTRLA_ENABLE;
-
-
-  // Configure Prescaler for divide by 2 (500kHz clock to COUNT)
-  TC5->COUNT16.CTRLA.bit.PRESCALER = 1;
-
-  // Configure TC5 Compare Mode for compare channel 0
-  // "Match Frequency" operation
-  TC5->COUNT16.CTRLA.bit.WAVEGEN = 1;
-
-  // Initialize compare value for 100mS @ 500kHz
-  TC5->COUNT16.CC[0].reg = 500000;
-
-  // Enable TC5 compare mode interrupt generation
-  // Enable match interrupts on compare channel 0 
-  TC5->COUNT16.INTENSET.bit.MC0 = 1;
-
-  // Enable TC5
-  TC5->COUNT16.CTRLA.bit.ENABLE = 1;
-
-  // Wait until TC5 is enabled
-  while(TC5->COUNT16.STATUS.bit.SYNCBUSY == 1);
-  NVIC_SetPriority(TC5_IRQn, 3);
-  NVIC_EnableIRQ(TC5_IRQn);
 }
 
 void ADC_Init() {
@@ -154,7 +108,6 @@ void ADC_Init() {
                        ADC_INPUTCTRL_MUXNEG_GND |
                        ADC_INPUTCTRL_MUXPOS_PIN0;
 
-
   /* Use the internal VCC reference. This is 1/2 of what's on VCCA.
    * since VCCA is typically 3.3v, this is 1.65v.
    */
@@ -164,9 +117,6 @@ void ADC_Init() {
   */
   ADC->CTRLB.bit.DIFFMODE = 0;
 
-  /* Enable interrupts */
-  ADC->INTENSET.bit.RESRDY == 1;
-
   /* Wait for bus synchronization. */
   while (ADC->STATUS.bit.SYNCBUSY);
 
@@ -174,8 +124,11 @@ void ADC_Init() {
   ADC->CTRLA.bit.ENABLE = true;
   /* The first result should be thrown away, so let's just do that */
   ADC_Read();
+
+  /* Enable RESRDY interrupt */
+  ADC->INTENSET.bit.RESRDY == 1;
   NVIC_EnableIRQ(ADC_IRQn);
-  NVIC_SetPriority(ADC_IRQn, 2);
+  NVIC_SetPriority(ADC_IRQn, 0);
 }
 
 void setup() {
@@ -188,22 +141,15 @@ void setup() {
   __disable_irq();
   Clock_Init();
   ADC_Init();
-  TC5_Init();
   __enable_irq();
 
   while (!Serial);
-  Serial.println("QT Py Sensor");
+  Serial.println("QT Py ADC");
 }
 
-void loop() { }
-
-void TC5_Handler(void) {
-  Serial.println("TC5_Handler");
-  // start an ADC read
+void loop() {
   ADC->SWTRIG.bit.START = true;
-
-  // reset the timer interrupt
-  TC5->COUNT16.INTFLAG.bit.MC0 = 1;
+  delay(1000);
 }
 
 void ADC_Handler(void) {
@@ -213,13 +159,3 @@ void ADC_Handler(void) {
   // reset the adc interrupt
   ADC->INTFLAG.bit.RESRDY = 1;
 }
-
-// void Request_Handler() {
-//   Wire.write("hello");
-// }
-// 
-// void Receive_Handler(int numBytes) {
-//   while (Wire.available()) {
-//     Wire.read();
-//   }
-// }
