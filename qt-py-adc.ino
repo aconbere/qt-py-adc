@@ -153,7 +153,6 @@ void ADC_Init() {
   */
   ADC->CTRLB.bit.DIFFMODE = 0;
 
-
   /* Enable interrupts */
   ADC->INTENSET.bit.RESRDY == 1;
 
@@ -198,7 +197,7 @@ void TC5_Handler(void) {
   // start an ADC read
   ADC->SWTRIG.bit.START = true;
   // reset the timer interrupt
-  // TC5->COUNT16.INTFLAG.reg |= 0b00010000;
+
   TC5->COUNT16.INTFLAG.bit.MC0 = 0x01;
 }
 
