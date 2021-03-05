@@ -1,27 +1,37 @@
 #include <sam.h>
-#include <Wire.h>
+// #include <Wire.h>
 
 #define VOLT_SENSE PORT_PA02
 #define CURRENT_SENSE PORT_PA03
 #define MULTISAMPLE false
 
 void Clock_Init(void) {
-  SYSCTRL->OSC8M.bit.PRESC = 0;                      // no prescaler (is 8 on reset)
-  SYSCTRL->OSC8M.bit.ENABLE = 1;                     // enable source
+  // no prescaler (is 8 on reset)
+  SYSCTRL->OSC8M.bit.PRESC = 0;
 
-  GCLK->GENDIV.bit.ID = 1;                           // select GCLK_GEN[1]
-  GCLK->GENDIV.bit.DIV = 0;                          // no prescaler
+  // enable source
+  SYSCTRL->OSC8M.bit.ENABLE = 1;
 
-  GCLK->GENCTRL.bit.ID = 1;                          // select GCLK_GEN[1]
-  GCLK->GENCTRL.bit.GENEN = 1;                       // enable generator
-  GCLK->GENCTRL.reg |= GCLK_GENCTRL_SRC_OSC8M;       // OSC8M source
+  // select GCLK_GEN[1]
+  GCLK->GENDIV.bit.ID = 1;
 
-  // GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID_SERCOM0_CORE | // SERCOM0 peripheral channel
-  //                     GCLK_CLKCTRL_GEN_GCLK1 |       // select source GCLK_GEN[1]
-  //                     GCLK_CLKCTRL_CLKEN;
+  // no prescaler
+  GCLK->GENDIV.bit.DIV = 0;
 
-  PM->APBCSEL.bit.APBCDIV = 0;                       // no prescaler
-  PM->APBCMASK.bit.ADC_ = 1;                         // Enable clocking for the ADC */
+  // select GCLK_GEN[1]
+  GCLK->GENCTRL.bit.ID = 1;
+
+  // enable generator
+  GCLK->GENCTRL.bit.GENEN = 1;
+
+  // OSC8M source
+  GCLK->GENCTRL.reg |= GCLK_GENCTRL_SRC_OSC8M;
+
+  // no prescaler
+  PM->APBCSEL.bit.APBCDIV = 0;
+
+  // Enable clocking for the ADC */
+  PM->APBCMASK.bit.ADC_ = 1;
   while(GCLK->STATUS.reg & GCLK_STATUS_SYNCBUSY);
 }
 
@@ -58,16 +68,18 @@ void TC5_Init() {
 
 
   // Configure Prescaler for divide by 2 (500kHz clock to COUNT)
-  TC5->COUNT16.CTRLA.bit.PRESCALER = 0x1;
+  TC5->COUNT16.CTRLA.bit.PRESCALER = 1;
 
   // Configure TC5 Compare Mode for compare channel 0
-  TC5->COUNT16.CTRLA.bit.WAVEGEN = 0x1; // "Match Frequency" operation
+  // "Match Frequency" operation
+  TC5->COUNT16.CTRLA.bit.WAVEGEN = 1;
 
   // Initialize compare value for 100mS @ 500kHz
   TC5->COUNT16.CC[0].reg = 500000;
 
   // Enable TC5 compare mode interrupt generation
-  TC5->COUNT16.INTENSET.bit.MC0 = 0x1; // Enable match interrupts on compare channel 0 
+  // Enable match interrupts on compare channel 0 
+  TC5->COUNT16.INTENSET.bit.MC0 = 1;
 
   // Enable TC5
   TC5->COUNT16.CTRLA.bit.ENABLE = 1;
@@ -99,22 +111,28 @@ void ADC_Init() {
    */
   PORT->Group[0].PMUX[2 >> 1].bit.PMUXE = PORT_PMUX_PMUXO_B;
 
-  GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(GCM_ADC )| // Generic Clock ADC
-                      GCLK_CLKCTRL_GEN_GCLK0   | // Generic Clock Generator 0 is source
+  // Generic Clock ADC
+  // Generic Clock Generator 0 is source
+  GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(GCM_ADC )|
+                      GCLK_CLKCTRL_GEN_GCLK0   |
                       GCLK_CLKCTRL_CLKEN;
 
   while (GCLK->STATUS.bit.SYNCBUSY);
   while (ADC->STATUS.bit.SYNCBUSY);
 
-  ADC->CTRLB.reg = ADC_CTRLB_PRESCALER_DIV512 |    // Divide Clock by 512.
-                   ADC_CTRLB_RESSEL_12BIT;         // 10 bits resolution as default
+  // Divide Clock by 512.
+  // 10 bits resolution as default
+  ADC->CTRLB.reg = ADC_CTRLB_PRESCALER_DIV512 |
+                   ADC_CTRLB_RESSEL_12BIT;
 
   ADC->SAMPCTRL.reg = ADC_SAMPCTRL_SAMPLEN(10);
 
-  while(ADC->STATUS.bit.SYNCBUSY);
+  // 1 sample only (no oversampling nor averaging)
+  // Adjusting result by 0
+  ADC->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_1 |
+                     ADC_AVGCTRL_ADJRES(0x0ul);
 
-  ADC->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_1 |    // 1 sample only (no oversampling nor averaging)
-                     ADC_AVGCTRL_ADJRES(0x0ul);   // Adjusting result by 0
+  while(ADC->STATUS.bit.SYNCBUSY);
 
 
   /* Configure the input parameters.
@@ -131,9 +149,6 @@ void ADC_Init() {
    * - Peripheral Function B is in PMUX(E)[0x01]
 
    * - MUXPOST_PIN3 means that the ADC should read from AIN3, or PA02.
-
-   * TODO - If I switch to an external reference I'll need to update
-   * the gain to ADC_INPUTCTRL_GAIN_1X
    */
   ADC->INPUTCTRL.reg = ADC_INPUTCTRL_GAIN_DIV2 |
                        ADC_INPUTCTRL_MUXNEG_GND |
@@ -142,10 +157,6 @@ void ADC_Init() {
 
   /* Use the internal VCC reference. This is 1/2 of what's on VCCA.
    * since VCCA is typically 3.3v, this is 1.65v.
-
-   * TODO - Consider switching to an external reference source
-   * ADC_REFCTRL_REFSEL_VREFA since this would expand the range to
-   * 0 - 3V from 0 - 1.65V
    */
   ADC->REFCTRL.reg = ADC_REFCTRL_REFSEL_INTVCC1;
 
@@ -162,43 +173,37 @@ void ADC_Init() {
   /* Enable the ADC. */
   ADC->CTRLA.bit.ENABLE = true;
   /* The first result should be thrown away, so let's just do that */
-  // ADC_Read();
-  NVIC_SetPriority(ADC_IRQn, 2);
+  ADC_Read();
   NVIC_EnableIRQ(ADC_IRQn);
+  NVIC_SetPriority(ADC_IRQn, 2);
 }
 
 void setup() {
   Serial.begin(9600);
 
-  Wire.begin(28);
-  Wire.onRequest(Request_Handler);
-  Wire.onReceive(Receive_Handler);
+  // Wire.begin(28);
+  // Wire.onRequest(Request_Handler);
+  // Wire.onReceive(Receive_Handler);
 
   __disable_irq();
   Clock_Init();
   ADC_Init();
-  // TC5_Init();
+  TC5_Init();
   __enable_irq();
 
   while (!Serial);
   Serial.println("QT Py Sensor");
 }
 
-void loop() {
-  // Serial.print("V: ");
-  // Serial.print(readAdc());
-  // Serial.print("\n\r");
-  ADC->SWTRIG.bit.START = true;
-  delay(1000);
-}
+void loop() { }
 
 void TC5_Handler(void) {
   Serial.println("TC5_Handler");
   // start an ADC read
   ADC->SWTRIG.bit.START = true;
-  // reset the timer interrupt
 
-  TC5->COUNT16.INTFLAG.bit.MC0 = 0x01;
+  // reset the timer interrupt
+  TC5->COUNT16.INTFLAG.bit.MC0 = 1;
 }
 
 void ADC_Handler(void) {
@@ -206,15 +211,15 @@ void ADC_Handler(void) {
   Serial.print(ADC->RESULT.reg);
   Serial.print("\n\r");
   // reset the adc interrupt
-  ADC->INTFLAG.bit.RESRDY = 0x01;
+  ADC->INTFLAG.bit.RESRDY = 1;
 }
 
-void Request_Handler() {
-  Wire.write("hello");
-}
-
-void Receive_Handler(int numBytes) {
-  while (Wire.available()) {
-    Wire.read();
-  }
-}
+// void Request_Handler() {
+//   Wire.write("hello");
+// }
+// 
+// void Receive_Handler(int numBytes) {
+//   while (Wire.available()) {
+//     Wire.read();
+//   }
+// }
