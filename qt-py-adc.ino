@@ -19,7 +19,7 @@ void Clock_Init(void) {
   // enable generator
   GCLK->GENCTRL.bit.GENEN = 1;
 
-  // OSC8M source
+  // OSC8M source - 8Mhz
   GCLK->GENCTRL.reg |= GCLK_GENCTRL_SRC_OSC8M;
 
   // no prescaler
@@ -45,8 +45,12 @@ uint32_t ADC_Read() {
 }
 
 void ADC_Init() {
-  // PORT->Group[0] is "PORTA" if it was Group[1] it would be "PORTB"
+  /* Step 1:
+   * 
+   * Configure what inputs the ADC is attached to
+   */
 
+  // PORT->Group[0] is "PORTA" if it was Group[1] it would be "PORTB"
   /* Set PA02 as an input pin. */
   PORT->Group[0].DIRCLR.reg = PORT_PA02;
 
@@ -65,14 +69,22 @@ void ADC_Init() {
    */
   PORT->Group[0].PMUX[2 >> 1].bit.PMUXE = PORT_PMUX_PMUXO_B;
 
-  // Generic Clock ADC
+  /* Step 2:
+   *
+   * Attach the clock to the ADC
+   */
+
   // Generic Clock Generator 0 is source
   GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(GCM_ADC )|
                       GCLK_CLKCTRL_GEN_GCLK0   |
                       GCLK_CLKCTRL_CLKEN;
 
   while (GCLK->STATUS.bit.SYNCBUSY);
-  while (ADC->STATUS.bit.SYNCBUSY);
+
+  /* Step 3:
+   *
+   * Configure the ADC: Clock scaling, sampling, averaging, etc.
+   */
 
   // Divide Clock by 512.
   // 10 bits resolution as default
@@ -85,8 +97,6 @@ void ADC_Init() {
   // Adjusting result by 0
   ADC->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_1 |
                      ADC_AVGCTRL_ADJRES(0x0ul);
-
-  while(ADC->STATUS.bit.SYNCBUSY);
 
 
   /* Configure the input parameters.
@@ -117,16 +127,17 @@ void ADC_Init() {
   */
   ADC->CTRLB.bit.DIFFMODE = 0;
 
+  /* Enable the ADC. */
+  ADC->CTRLA.bit.ENABLE = true;
+
   /* Wait for bus synchronization. */
   while (ADC->STATUS.bit.SYNCBUSY);
 
-  /* Enable the ADC. */
-  ADC->CTRLA.bit.ENABLE = true;
   /* The first result should be thrown away, so let's just do that */
   ADC_Read();
 
   /* Enable RESRDY interrupt */
-  ADC->INTENSET.bit.RESRDY == 1;
+  ADC->INTENSET.bit.RESRDY = 1;
   NVIC_EnableIRQ(ADC_IRQn);
   NVIC_SetPriority(ADC_IRQn, 0);
 }
