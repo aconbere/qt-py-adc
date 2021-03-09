@@ -1,4 +1,58 @@
 #include <sam.h>
+#include <Wire.h>
+
+#define FIRMWARE_MAJOR    0x00
+#define FIRMWARE_MINOR    0x01
+#define I2C_ADDRESS       0x32
+
+#define COMMAND_VOLTS            0x01
+#define COMMAND_CURRENT          0x02
+#define COMMAND_ERROR            0x03
+#define COMMAND_UNSET            0x04
+#define COMMAND_FIRMWARE_VERSION 0x05
+#define COMMAND_CALIBRATE        0x06
+
+#define STORE_MAX 100
+
+struct Measure {
+  uint16_t value;
+  uint32_t time;
+};
+
+Measure Measure_New(uint16_t value) {
+  struct Measure measure;
+  measure.value = value;
+  measure.time = 0;
+  return measure;
+}
+
+struct Store {
+  uint16_t index; 
+  Measure measures[100];
+};
+
+void Store_Insert(struct Store *store, struct Measure m) {
+  store->index += 1;
+  if (store->index == STORE_MAX) {
+    store->index = 0;
+  }
+  store->measures[store->index] = m;
+}
+
+Measure Store_Latest(struct Store store) {
+  return store.measures[store.index];
+}
+
+byte* Value_Bytes(uint16_t value) {
+  return (byte*)&value;
+}
+
+
+struct Store Volts;
+struct Store Amps;
+
+uint32_t Command = COMMAND_UNSET;
+
 
 void Clock_Init(void) {
   // no prescaler (is 8 on reset)
@@ -25,26 +79,14 @@ void Clock_Init(void) {
   // no prescaler
   PM->APBCSEL.bit.APBCDIV = 0;
 
-  // Enable clocking for the ADC */
-  PM->APBCMASK.bit.ADC_ = 1;
   while(GCLK->STATUS.reg & GCLK_STATUS_SYNCBUSY);
-}
 
-uint32_t ADC_Read() {
-  /* Start the ADC using a software trigger. */
-  ADC->SWTRIG.bit.START = true;
-
-  /* Wait for the result ready flag to be set. */
-  while (ADC->INTFLAG.bit.RESRDY == 0);
-
-  /* Clear the flag. */
-  ADC->INTFLAG.bit.RESRDY = 1;
-
-  /* Read the value. */
-  return ADC->RESULT.reg;
 }
 
 void ADC_Init() {
+  // Enable clocking for the ADC */
+  PM->APBCMASK.bit.ADC_ = 1;
+
   /* Step 1:
    * 
    * Configure what inputs the ADC is attached to
@@ -142,6 +184,68 @@ void ADC_Init() {
   NVIC_SetPriority(ADC_IRQn, 0);
 }
 
+uint32_t ADC_Read() {
+  /* Start the ADC using a software trigger. */
+  ADC->SWTRIG.bit.START = true;
+
+  /* Wait for the result ready flag to be set. */
+  while (ADC->INTFLAG.bit.RESRDY == 0);
+
+  /* Clear the flag. */
+  ADC->INTFLAG.bit.RESRDY = 1;
+
+  /* Read the value. */
+  return ADC->RESULT.reg;
+}
+
+void TC5_Init() {
+  GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(GCM_TC4_TC5) |
+                      GCLK_CLKCTRL_GEN_GCLK0 |
+                      GCLK_CLKCTRL_CLKEN;
+
+  while (GCLK->STATUS.bit.SYNCBUSY);
+
+   // Configure synchronous bus clock
+  PM->APBCSEL.bit.APBCDIV = 0; // no prescaler
+  PM->APBCMASK.bit.TC5_ = 1; // enable TC5 interface
+
+  // Configure Count Mode (16-bit)
+  TC5->COUNT16.CTRLA.reg |= TC_CTRLA_MODE_COUNT16 |
+                            TC_CTRLA_WAVEGEN_MFRQ |
+                            TC_CTRLA_PRESCALER_DIV1024 |
+                            TC_CTRLA_ENABLE;
+
+
+  // Configure Prescaler for divide by 2 (500kHz clock to COUNT)
+  TC5->COUNT16.CTRLA.bit.PRESCALER = 1;
+
+  // Configure TC5 Compare Mode for compare channel 0
+  // "Match Frequency" operation
+  TC5->COUNT16.CTRLA.bit.WAVEGEN = 1;
+
+  // Initialize compare value for 100mS @ 500kHz
+  TC5->COUNT16.CC[0].reg = 500000;
+
+  // Enable TC5 compare mode interrupt generation
+  // Enable match interrupts on compare channel 0 
+  TC5->COUNT16.INTENSET.bit.MC0 = 1;
+
+  // Enable TC5
+  TC5->COUNT16.CTRLA.bit.ENABLE = 1;
+
+  // Wait until TC5 is enabled
+  while(TC5->COUNT16.STATUS.bit.SYNCBUSY == 1);
+  NVIC_SetPriority(TC5_IRQn, 3);
+  NVIC_EnableIRQ(TC5_IRQn);
+}
+
+void Wire_Init() {
+  Wire.begin(I2C_ADDRESS);
+  Wire.onRequest(On_Request);
+  Wire.onReceive(On_Receive);
+}
+
+
 void setup() {
   Serial.begin(9600);
 
@@ -152,21 +256,95 @@ void setup() {
   __disable_irq();
   Clock_Init();
   ADC_Init();
+  TC5_Init();
+  Wire_Init();
   __enable_irq();
 
   while (!Serial);
   Serial.println("QT Py ADC");
 }
 
-void loop() {
+void loop() { }
+
+void TC5_Handler(void) {
+  // start an ADC read
   ADC->SWTRIG.bit.START = true;
-  delay(1000);
+
+  // reset the timer interrupt
+  TC5->COUNT16.INTFLAG.bit.MC0 = 1;
 }
 
+
 void ADC_Handler(void) {
+  uint16_t v = ADC->RESULT.reg;
+
   Serial.print("V: ");
-  Serial.print(ADC->RESULT.reg);
-  Serial.print("\n\r");
+  Serial.print(v);
+  Serial.println("");
   // reset the adc interrupt
+  Store_Insert(&Volts, Measure_New(v));
   ADC->INTFLAG.bit.RESRDY = 1;
+}
+
+
+void On_Receive(int count) {
+  if (count > 0) {
+    Serial.print("On_Receive: ");
+    Serial.print(count);
+    Serial.println("");
+
+    while (Wire.available()) {
+      Command = Wire.read();
+      Serial.print(Command);
+
+      switch (Command) {
+        case COMMAND_VOLTS:
+          Serial.println(": COMMAND_VOLTS");
+          break;
+        case COMMAND_CURRENT:
+          Serial.println(": COMMAND_CURRENT");
+          break;
+        case COMMAND_FIRMWARE_VERSION:
+          Serial.println(": COMMAND_FIRMWARE_VERSION");
+          break;
+        case COMMAND_ERROR:
+          Serial.println(": COMMAND_ERROR");
+          break;
+        default:
+          Command = COMMAND_UNSET;
+          break;
+      }
+    }
+  }
+}
+
+void Wire_Write16(uint16_t v) {
+  Wire.write(byte (v & 0x00FF));
+  Wire.write(byte (v >> 8));
+}
+
+void On_Request() {
+  Serial.println("On_Request");
+
+  switch (Command) {
+    case COMMAND_VOLTS: {
+      Measure volts = Store_Latest(Volts);
+      Wire_Write16(volts.value);
+      break;
+    }
+    case COMMAND_CURRENT: {
+      Measure amps = Store_Latest(Volts);
+      Wire_Write16(volts.value);
+      break;
+    }
+    case COMMAND_FIRMWARE_VERSION: {
+      Wire.write(FIRMWARE_MAJOR);
+      Wire.write(FIRMWARE_MINOR);
+      break;
+    }
+    default:
+      break;
+  }
+
+  Command = COMMAND_UNSET;
 }
